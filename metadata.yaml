@@ -1,4 +1,4 @@
-name: minecraftconsole
+name: astrbot_plugin_minecraftconsole
 display_name: MineCraft控制台
 desc: 使用Rcon发送命令至MC
 version: v1.0.0
