@@ -1,19 +1,22 @@
-"""异步 RCON 客户端（纯 asyncio，无第三方 rcon 库）"""
+"""异步桥接客户端。
+
+协议：
+1. 连接后先发送 token + 换行
+2. 再发送单行请求：
+   - PING
+   - EXEC|<wait_ms>|<command>
+3. 服务端返回多行：
+   - status=ok|error
+   - code=...
+   - output_b64=...
+   - end=1
+"""
 
 from __future__ import annotations
 
 import asyncio
-import struct
+import base64
 from dataclasses import dataclass
-from typing import Optional, Tuple
-
-
-RCON_TYPE_RESPONSE_VALUE = 0
-RCON_TYPE_EXECCOMMAND = 2
-RCON_TYPE_AUTH = 3
-RCON_TYPE_AUTH_RESPONSE = 2  # 与 EXECCOMMAND 同数值但语义不同
-
-MAX_RCON_PACKET_SIZE = 1024 * 1024  # 1MB 防御异常 length
 
 
 class RconError(Exception):
@@ -34,148 +37,85 @@ class RconConfig:
     port: int
     password: str
     timeout: float = 5.0
+    test_on_first_use: bool = True
 
 
 class AsyncRconClient:
     def __init__(self, cfg: RconConfig):
         self.cfg = cfg
-        self._reader: Optional[asyncio.StreamReader] = None
-        self._writer: Optional[asyncio.StreamWriter] = None
-        self._req_id = 10
-        self._connected = False
-        self._authed = False
-
-    @property
-    def connected(self) -> bool:
-        return (
-            self._connected
-            and self._writer is not None
-            and not self._writer.is_closing()
-        )
-
-    @property
-    def authed(self) -> bool:
-        return self._authed
-
-    def _next_id(self) -> int:
-        self._req_id += 1
-        if self._req_id > 2_000_000_000:
-            self._req_id = 10
-        return self._req_id
-
-    @staticmethod
-    def _pack(req_id: int, ptype: int, payload: str) -> bytes:
-        body = struct.pack("<ii", req_id, ptype) + payload.encode("utf-8") + b"\x00\x00"
-        return struct.pack("<i", len(body)) + body
-
-    async def connect(self) -> None:
-        if self.connected:
-            return
-        self._reader, self._writer = await asyncio.wait_for(
-            asyncio.open_connection(self.cfg.host, self.cfg.port),
-            timeout=self.cfg.timeout,
-        )
-        self._connected = True
+        self._tested = False
 
     async def close(self) -> None:
-        self._authed = False
-        self._connected = False
-        if self._writer:
-            try:
-                self._writer.close()
-                await self._writer.wait_closed()
-            except Exception:
-                pass
-        self._reader = None
-        self._writer = None
+        self._tested = False
 
-    async def _send_packet(self, req_id: int, ptype: int, payload: str) -> None:
-        if not self.connected or not self._writer:
-            raise RconError("RCON not connected")
-        self._writer.write(self._pack(req_id, ptype, payload))
-        await asyncio.wait_for(self._writer.drain(), timeout=self.cfg.timeout)
-
-    async def _read_exactly(self, n: int) -> bytes:
-        if not self.connected or not self._reader:
-            raise RconError("RCON not connected")
+    async def _roundtrip(self, request_line: str) -> dict[str, str]:
+        reader = None
+        writer = None
         try:
-            return await asyncio.wait_for(self._reader.readexactly(n), timeout=self.cfg.timeout)
-        except asyncio.IncompleteReadError as e:
-            raise RconProtocolError("RCON connection closed unexpectedly") from e
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.cfg.host, self.cfg.port),
+                timeout=self.cfg.timeout,
+            )
+            writer.write((self.cfg.password + "\n").encode("utf-8"))
+            writer.write((request_line + "\n").encode("utf-8"))
+            await asyncio.wait_for(writer.drain(), timeout=self.cfg.timeout)
+
+            result: dict[str, str] = {}
+            while True:
+                raw = await asyncio.wait_for(reader.readline(), timeout=self.cfg.timeout)
+                if not raw:
+                    raise RconProtocolError("Bridge connection closed unexpectedly")
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                if line == "end=1":
+                    break
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                result[key] = value
+            return result
         except asyncio.TimeoutError as e:
-            raise RconError("RCON read timeout") from e
+            raise RconError("Bridge read/write timeout") from e
+        finally:
+            if writer is not None:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
 
-    async def _read_packet(self) -> Tuple[int, int, str]:
-        raw_len = await self._read_exactly(4)
-        (length,) = struct.unpack("<i", raw_len)
-
-        if length < 10:
-            raise RconProtocolError(f"Invalid RCON packet length: {length}")
-        if length > MAX_RCON_PACKET_SIZE:
-            raise RconProtocolError(f"RCON packet too large: {length}")
-
-        body = await self._read_exactly(length)
-        req_id, ptype = struct.unpack("<ii", body[:8])
-        payload_raw = body[8:]
-
-        if len(payload_raw) < 2 or payload_raw[-2:] != b"\x00\x00":
-            raise RconProtocolError("Invalid RCON payload terminator")
-
-        payload = payload_raw[:-2].decode("utf-8", errors="replace")
-        return req_id, ptype, payload
+    @staticmethod
+    def _decode_output(result: dict[str, str]) -> str:
+        if "output_b64" in result:
+            try:
+                return base64.b64decode(result["output_b64"]).decode("utf-8", errors="replace")
+            except Exception as e:
+                raise RconProtocolError("Invalid output_b64 payload") from e
+        if "output" in result:
+            try:
+                return base64.b64decode(result["output"]).decode("utf-8", errors="replace")
+            except Exception:
+                return result["output"]
+        return ""
 
     async def auth(self) -> None:
-        await self.connect()
-
-        auth_id = self._next_id()
-        await self._send_packet(auth_id, RCON_TYPE_AUTH, self.cfg.password)
-
-        # 必须等到真正的 AUTH_RESPONSE（避免误判）
-        deadline = asyncio.get_running_loop().time() + self.cfg.timeout
-        while True:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                raise RconError("RCON auth timeout")
-
-            req_id, ptype, _ = await asyncio.wait_for(self._read_packet(), timeout=remaining)
-
-            if req_id == -1:
-                raise RconAuthError("RCON auth failed (bad password?)")
-
-            if req_id == auth_id and ptype == RCON_TYPE_AUTH_RESPONSE:
-                self._authed = True
-                return
+        data = await self._roundtrip("PING")
+        if data.get("status") != "ok":
+            code = str(data.get("code", ""))
+            if code == "AUTH_FAILED":
+                raise RconAuthError("Bridge auth failed")
+            raise RconError(code or "Bridge ping failed")
+        self._tested = True
 
     async def ensure_ready(self) -> None:
-        if not self.connected:
-            await self.connect()
-        if not self.authed:
+        if self.cfg.test_on_first_use and not self._tested:
             await self.auth()
 
-    async def exec(self, command: str) -> str:
+    async def exec(self, command: str, wait_ms: int = 0) -> str:
         await self.ensure_ready()
-
-        cmd_id = self._next_id()
-        end_id = self._next_id()
-
-        await self._send_packet(cmd_id, RCON_TYPE_EXECCOMMAND, command)
-        # 终止包：空命令，用于收齐多包响应
-        await self._send_packet(end_id, RCON_TYPE_EXECCOMMAND, "")
-
-        chunks: list[str] = []
-        deadline = asyncio.get_running_loop().time() + self.cfg.timeout
-
-        while True:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                raise RconError("RCON command response timeout")
-
-            req_id, _ptype, payload = await asyncio.wait_for(self._read_packet(), timeout=remaining)
-
-            if req_id == end_id:
-                break
-
-            if req_id == cmd_id and payload:
-                chunks.append(payload)
-
-        return "".join(chunks).strip("\n")
+        data = await self._roundtrip(f"EXEC|{max(0, int(wait_ms))}|{command}")
+        if data.get("status") != "ok":
+            code = str(data.get("code", ""))
+            if code == "AUTH_FAILED":
+                raise RconAuthError("Bridge auth failed")
+            raise RconError(code or "Bridge exec failed")
+        return self._decode_output(data).strip("\n")

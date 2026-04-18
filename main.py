@@ -1,6 +1,5 @@
-"""
-AstrBot Minecraft Console Plugin
-通过 RCON 执行 Minecraft 指令：/mc-command <command>
+"""AstrBot Minecraft Console Plugin
+通过桥接插件执行 Minecraft 指令：/mc-command <command>
 """
 
 from __future__ import annotations
@@ -13,48 +12,33 @@ from astrbot.api.star import Context, Star, register
 
 from .config import MinecraftConsoleConfig
 from .message_formatter import MessageFormatter
-from .rcon_client import AsyncRconClient, RconAuthError, RconConfig
-from .utils import parse_command_args, truncate_text
+from .rcon_client import AsyncRconClient, RconAuthError, RconConfig, RconError
+from .utils import parse_command_args, parse_exec_options, truncate_text
 
 
-@register("minecraftconsole", "MineCraft控制台", "使用RCON发送命令至MC", "1.0.0")
+@register("minecraftconsole", "MineCraft控制台", "使用桥接服务发送命令至MC", "1.3.0")
 class MinecraftConsole(Star):
-    """Minecraft RCON 控制台插件"""
-
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
-
         self.context = context
         self.config = MinecraftConsoleConfig.from_dict(config)
         self.formatter = MessageFormatter()
-
-        # 串行化执行，避免同一连接并发读写导致协议错乱
         self._rcon_lock = asyncio.Lock()
-
-        # 连接复用：第一次执行命令时才真正 connect/auth
         self._client: AsyncRconClient | None = None
         self._client_cfg: RconConfig | None = None
 
-        # __init__ 不启动 task，不做阻塞 IO，只做提示日志
         if not self.config.enabled:
-            logger.info("[MC-RCON] 插件未启用")
+            logger.info("[MC-BRIDGE] 插件未启用")
         elif not self.config.is_rcon_ready:
-            logger.warning("[MC-RCON] 未配置 rcon_password，/mc-command 暂不可用")
+            logger.warning("[MC-BRIDGE] 未配置 host/port/token，/mc-command 暂不可用")
         else:
-            logger.info("[MC-RCON] 插件已启用（将于首次执行命令时建立 RCON 连接）")
+            logger.info("[MC-BRIDGE] 插件已启用（按需连接桥接端）")
 
     async def initialize(self):
-        """
-        可选：异步初始化钩子
-        这里也不做网络连接（避免启动失败导致插件不可用），仅做配置检查/日志。
-        """
-        if not self.config.enabled:
-            return
-        if not self.config.is_rcon_ready:
-            logger.warning("[MC-RCON] rcon_password 为空，/mc-command 暂不可用")
+        if self.config.enabled and not self.config.is_rcon_ready:
+            logger.warning("[MC-BRIDGE] token 为空，/mc-command 暂不可用")
 
     def _ensure_client(self) -> None:
-        """根据配置构建/更新 RCON Client（连接在第一次 exec 时建立）"""
         if not self.config.is_rcon_ready:
             self._client = None
             self._client_cfg = None
@@ -65,9 +49,8 @@ class MinecraftConsole(Star):
             port=int(self.config.rcon_port),
             password=self.config.rcon_password,
             timeout=float(self.config.timeout),
+            test_on_first_use=bool(self.config.test_on_first_use),
         )
-
-        # 配置变化时重建 client（下次命令会自动重新 auth）
         if self._client_cfg != cfg:
             self._client_cfg = cfg
             self._client = AsyncRconClient(cfg)
@@ -77,11 +60,30 @@ class MinecraftConsole(Star):
             return False
         return str(user_id) in {str(x) for x in (self.config.admins or [])}
 
+    async def _exec_with_retry(self, command: str, wait_ms: int) -> str:
+        if self._client is None or self._client_cfg is None:
+            raise RconError("client not ready")
+
+        last_error: Exception | None = None
+        for attempt in range(1, int(self.config.max_attempts) + 1):
+            try:
+                return await self._client.exec(command, wait_ms)
+            except RconAuthError:
+                await self._client.close()
+                self._client = AsyncRconClient(self._client_cfg)
+                raise
+            except Exception as e:
+                last_error = e
+                logger.warning("[MC-BRIDGE] 第 %s/%s 次执行失败: %s", attempt, self.config.max_attempts, e)
+                await self._client.close()
+                self._client = AsyncRconClient(self._client_cfg)
+                if attempt >= int(self.config.max_attempts):
+                    break
+        raise RconError(str(last_error) if last_error else "unknown error")
+
     @filter.command("mc-command")
     async def mc_command(self, event: AstrMessageEvent):
-        """执行 MC 指令：/mc-command <command>"""
-        # 如果你不想刷日志，可以删掉这行
-        logger.info("[MC-RCON] raw event.message_str = %r", event.message_str)
+        logger.info("[MC-BRIDGE] raw event.message_str = %r", event.message_str)
 
         if not self.config.enabled:
             yield event.plain_result(self.formatter.format_not_enabled())
@@ -96,7 +98,13 @@ class MinecraftConsole(Star):
             yield event.plain_result(self.formatter.format_usage())
             return
 
-        # 按最新配置确保 client
+        options = parse_exec_options(args)
+        if not options.command:
+            yield event.plain_result(self.formatter.format_usage())
+            return
+
+        wait_ms = options.wait_ms if options.explicit_wait else int(self.config.default_wait_ms)
+
         self._ensure_client()
         if self._client is None or self._client_cfg is None:
             yield event.plain_result(self.formatter.format_not_configured())
@@ -104,38 +112,21 @@ class MinecraftConsole(Star):
 
         async with self._rcon_lock:
             try:
-                output = await self._client.exec(args)
+                output = await self._exec_with_retry(options.command, wait_ms)
                 output = output if output else "(无输出)"
                 output = truncate_text(output, int(self.config.max_output))
-                yield event.plain_result(self.formatter.format_exec_result(args, output))
-
+                yield event.plain_result(self.formatter.format_exec_result(options.command, output))
             except RconAuthError:
-                # 认证失败时重建 client，避免半死连接
-                try:
-                    await self._client.close()
-                except Exception:
-                    pass
-                self._client = AsyncRconClient(self._client_cfg)
                 yield event.plain_result(self.formatter.format_auth_failed())
-
             except Exception as e:
-                logger.error("[MC-RCON] 执行失败: %s", e, exc_info=True)
-                # 网络异常：关闭旧连接，下次自动重连
-                try:
-                    await self._client.close()
-                except Exception:
-                    pass
-                self._client = AsyncRconClient(self._client_cfg)
+                logger.error("[MC-BRIDGE] 执行失败: %s", e, exc_info=True)
                 yield event.plain_result(self.formatter.format_exec_failed())
 
     async def terminate(self):
-        """插件停止时调用：只清理当前实例资源，不修改任何全局状态"""
-        logger.info("[MC-RCON] 正在停止插件...")
-
+        logger.info("[MC-BRIDGE] 正在停止插件...")
         if self._client:
             try:
                 await self._client.close()
             except Exception:
                 pass
-
-        logger.info("[MC-RCON] 已停止")
+        logger.info("[MC-BRIDGE] 已停止")

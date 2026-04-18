@@ -1,7 +1,7 @@
 {
   "enabled": {
     "type": "bool",
-    "description": "启用 Minecraft RCON 控制台",
+    "description": "启用 Minecraft 控制台插件",
     "default": true
   },
   "admins": {
@@ -11,24 +11,39 @@
   },
   "rcon_host": {
     "type": "string",
-    "description": "RCON 服务器地址",
+    "description": "桥接插件监听地址（沿用旧字段名）",
     "default": "127.0.0.1"
   },
   "rcon_port": {
     "type": "int",
-    "description": "RCON 服务器端口",
-    "default": 25575
+    "description": "桥接插件监听端口（沿用旧字段名）",
+    "default": 25580
   },
   "rcon_password": {
     "type": "string",
-    "description": "RCON 密码",
-    "hint": "对应 server.properties 的 rcon.password",
+    "description": "桥接插件鉴权令牌 token（沿用旧字段名）",
+    "hint": "需要与 Minecraft 侧 bridge.token 保持一致",
     "default": ""
   },
   "timeout": {
     "type": "float",
-    "description": "超时时间(秒)",
+    "description": "网络超时时间(秒)",
     "default": 5
+  },
+  "max_attempts": {
+    "type": "int",
+    "description": "网络层最多尝试次数（不会因为空输出重复执行命令）",
+    "default": 2
+  },
+  "test_on_first_use": {
+    "type": "bool",
+    "description": "首次使用前是否先做一次 ping 测试",
+    "default": true
+  },
+  "default_wait_ms": {
+    "type": "int",
+    "description": "未显式传 --t 时，默认等待日志的毫秒数",
+    "default": 300
   },
   "max_output": {
     "type": "int",

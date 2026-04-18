@@ -18,16 +18,16 @@ class MessageFormatter:
 
     @staticmethod
     def format_not_configured() -> str:
-        return "⚠️ RCON 未配置：请在插件配置中填写 rcon_password"
+        return "⚠️ 桥接未配置：请在插件配置中填写 host/port/token（沿用 rcon_* 字段）"
 
     @staticmethod
     def format_usage() -> str:
-        return "用法：/mc-command <MC命令>"
+        return "用法：/mc-command <MC命令> [--t=5s]"
 
     @staticmethod
     def format_auth_failed() -> str:
-        return "❌ RCON 认证失败：请检查 rcon_password"
+        return "❌ 桥接认证失败：请检查 rcon_password 是否与 bridge.token 一致"
 
     @staticmethod
     def format_exec_failed() -> str:
-        return "❌ RCON 执行失败：请检查 host/port/防火墙/enable-rcon"
+        return "❌ 指令执行失败：请检查桥接插件是否启动、host/port/token 是否正确"

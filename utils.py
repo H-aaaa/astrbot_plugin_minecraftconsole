@@ -2,47 +2,72 @@
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ExecOptions:
+    command: str
+    wait_ms: int
+    explicit_wait: bool
+
 
 def parse_command_args(event_message_str: str, command: str) -> str | None:
-    """
-    解析指令参数，并尽量保留参数的原始空白（不压缩空格）。
-
-    兼容输入：
-    1) "/mc-command say hello"
-    2) "mc-command say hello"
-    3) "say hello"（框架已剥离命令名）
-
-    返回：只包含参数部分，例如 "say hello"
-    """
+    """解析指令参数，并尽量保留参数原始空白。"""
     if event_message_str is None:
         return None
 
-    # 仅去掉首尾换行/空白（不做 split()，避免压缩 JSON 内部空格）
     s = event_message_str.strip()
     if not s:
         return None
 
-    # 兼容全角斜杠
     if s.startswith("／"):
         s = "/" + s[1:]
 
     cmd = command.strip().lstrip("/")
     cmd_lower = cmd.lower()
 
-    # 情况1：以 "/cmd" 开头（不压缩空白）
     if s[: len(cmd) + 1].lower() == f"/{cmd_lower}":
-        rest = s[len(cmd) + 1 :]
-        rest = rest.lstrip()  # 只去掉命令后面的分隔空白
+        rest = s[len(cmd) + 1 :].lstrip()
         return rest if rest else None
 
-    # 情况2：以 "cmd" 开头（无斜杠）
     if s[: len(cmd)].lower() == cmd_lower:
-        rest = s[len(cmd) :]
-        rest = rest.lstrip()
+        rest = s[len(cmd) :].lstrip()
         return rest if rest else None
 
-    # 情况3：框架已剥离命令名，整串就是参数（保留内部空白）
     return s
+
+
+_WAIT_RE = re.compile(r"(?:^|\s)--t=(\d+)(ms|s)?(?=\s|$)", re.IGNORECASE)
+
+
+def parse_exec_options(raw_args: str) -> ExecOptions:
+    """解析执行参数。
+
+    支持：
+    - /mc-command list
+    - /mc-command lp editor --t=5s
+    - /mc-command say hi --t=500ms
+    """
+    text = (raw_args or "").strip()
+    if not text:
+        return ExecOptions(command="", wait_ms=0, explicit_wait=False)
+
+    wait_ms = 0
+    explicit_wait = False
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal wait_ms, explicit_wait
+        explicit_wait = True
+        value = int(match.group(1))
+        unit = (match.group(2) or "s").lower()
+        wait_ms = value if unit == "ms" else value * 1000
+        return " "
+
+    command = _WAIT_RE.sub(_replace, text)
+    command = re.sub(r"\s+", " ", command).strip()
+    return ExecOptions(command=command, wait_ms=max(0, wait_ms), explicit_wait=explicit_wait)
 
 
 def truncate_text(text: str, max_len: int) -> str:
