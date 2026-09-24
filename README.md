@@ -1,384 +1,169 @@
-# AstrBot Minecraft Console 插件
+# MineCraft 控制台 · AstrBot
 
-通过聊天指令将 Minecraft 控制台命令发送到 **Minecraft 服务端桥接插件** 执行，并将命令返回、日志输出或错误信息回显到聊天中。
-
-本版本 **不再使用原生 RCON 协议**，而是连接 Minecraft 服务端上的桥接插件：
-
-**桥接插件项目：** AstrBotRconBridge  
-`https://github.com/H-aaaa/AstrBotRconBridge`
-
-> [!WARNING]
-> 本插件及文档由 AI 协助整理，内容仅供参考，请结合实际环境测试后使用。
->
-> 已测试：
-> - Spigot 1.8.8
-> - Spigot 1.21.11
->
-> 插件目前仍处于开发阶段，无法 100% 保证在所有服务端核心、插件组合和命令场景下都完全一致。
->
-> 如有问题请提交 issue 或联系作者。
-
----
-
-## ✨ 功能特性
-
-- ✅ `/mc-command <命令>`：在聊天中执行 Minecraft 控制台命令
-- ✅ 管理员校验：仅允许 `admins` 列表中的用户使用
-- ✅ 基于桥接插件通信：不再依赖原生 RCON 回包限制
-- ✅ 支持等待日志输出窗口：适合 `lp editor` 等延迟返回命令
-- ✅ 默认只执行一次命令：不会因为“无输出”而重复执行
-- ✅ 网络异常自动重试：最多重试 `max_attempts` 次
-- ✅ 输出截断：防止过长日志刷屏
-- ✅ 支持错误回显：如参数错误、命令报错、插件返回失败等
-
----
-
-## 🧭 工作原理
-
-AstrBot 插件本身不直接使用 Minecraft 原生 RCON 协议，而是连接服务端上的 **AstrBotRconBridge** 插件。
-
-执行流程如下：
-
-1. 聊天中发送 `/mc-command <命令>`
-2. AstrBot 插件解析命令和可选参数 `--t=...`
-3. AstrBot 连接 Minecraft 服务端桥接插件
-4. 桥接插件在服务端内执行控制台命令
-5. 桥接插件收集：
-   - 命令同步返回
-   - 等待窗口内的日志输出
-   - 可能的错误信息
-6. AstrBot 将结果回显到聊天中
-
----
-
-## 🔁 配置映射
-
-AstrBot 侧保留原有配置字段名，但其含义已经映射到桥接插件：
-
-| AstrBot 配置项 | 对应桥接插件配置 |
-|---|---|
-| `rcon_host` | `bridge.host` |
-| `rcon_port` | `bridge.port` |
-| `rcon_password` | `bridge.token` |
-
-也就是说：
-
-- `rcon_host` 不再是原生 RCON 地址，而是 **桥接插件监听地址**
-- `rcon_port` 不再是原生 RCON 端口，而是 **桥接插件监听端口**
-- `rcon_password` 不再是原生 RCON 密码，而是 **桥接插件 token**
-
----
-
-## 🚀 指令示例
+在 AstrBot 聊天中发送 `/mc-command`，通过 [AstrBotRconBridge](https://github.com/H-aaaa/AstrBotRconBridge) 执行 Minecraft 控制台命令，并把服务端日志回传到聊天中。
 
 ```text
 /mc-command list
 /mc-command say hello
-/mc-command time set day
-/mc-command lp editor --t=5s
-/mc-command say hello --t=500ms
-```
-
-### `--t=...` 的作用
-
-`--t=...` 用于指定一个**日志等待窗口**，适合那些不会立刻返回结果、而是过一会儿才输出日志的命令。
-
-例如：
-
-```text
 /mc-command lp editor --t=5s
 ```
 
-表示：
+插件使用桥接端的 TCP 协议。配置中的 `rcon_*` 是为了兼容旧配置保留的字段名，实际填写的是**桥接地址、桥接端口和 token**；无需在 `server.properties` 中启用原生 RCON。
 
-- 执行 `lp editor`
-- 再额外等待 5 秒
-- 将这段时间内相关的日志输出一起回显
+## 使用前准备
 
-支持格式：
+- AstrBot v4，以及允许使用命令的聊天账号 ID。
+- Minecraft 服务端安装 AstrBotRconBridge，AstrBot 能访问它的监听端口。
+- 本文的日志采集说明对应桥接端的 [latest.log 采集更新](https://github.com/H-aaaa/AstrBotRconBridge/pull/1)。它使用真实控制台执行命令，再读取日志文件新增的内容。
 
-- `--t=5s`
-- `--t=500ms`
+Minecraft 核心的调度适配由桥接端负责：Folia 使用全局区域调度器，Paper、Leaves 使用相应接口，旧版 Bukkit/Spigot 使用主线程调度。Folia 上的第三方命令仍需要相应插件自身支持 Folia。
 
----
+## 安装与配置
 
-## 📌 行为说明
+### 1. 配置 Minecraft 桥接端
 
-### 1. 默认只执行一次
-插件默认只发送一次命令，不会因为“无输出”而再次执行命令。
-
-### 2. 网络错误可重试
-若出现连接失败、超时、桥接插件暂不可用等网络层错误，会最多重试 `max_attempts` 次。
-
-### 3. `--t=...` 只影响等待窗口
-`--t=...` 不会重复执行命令，只会决定执行后等待日志输出的时间。
-
-### 4. 输出可能来自两部分
-桥接插件最终返回的内容可能来自：
-
-- 命令同步返回
-- 等待窗口内的日志输出
-- 服务端错误信息
-
-### 5. 部分命令回显依赖日志
-某些插件命令或异步命令不会立即回包，而是通过控制台日志输出结果，例如：
-
-- `lp editor`
-- 某些管理插件命令
-- 某些异步执行的插件命令
-
-此时建议使用 `--t=...`。
-
----
-
-## 📦 安装
-
-### 方式一：手动安装
-
-将插件文件夹放入 AstrBot 插件目录，例如：
-
-- Windows：`C:\Users\<你>\.astrbot\data\plugins\astrbot_plugin_minecraftconsole`
-- Linux：`~/.astrbot/data/plugins/astrbot_plugin_minecraftconsole`
-
-确保插件目录中至少包含以下文件：
-
-```text
-astrbot_plugin_minecraftconsole/
-  __init__.py
-  main.py
-  config.py
-  rcon_client.py
-  utils.py
-  message_formatter.py
-  _conf_schema.json
-```
-
-然后重启 AstrBot 或在面板中重新加载插件。
-
-### 方式二：通过 AstrBot 客户端远程安装
-
-按 AstrBot 客户端插件安装流程完成安装即可。
-
----
-
-## ⚙️ 配置说明
-
-本插件使用 AstrBot 的插件配置系统（`_conf_schema.json`）自动生成配置项并自动保存。
-
-在 AstrBot 管理面板中找到本插件配置并填写：
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|---|---|---:|---|
-| `enabled` | bool | `true` | 是否启用插件 |
-| `admins` | list | `[111, 222, 333]` | 允许使用 `/mc-command` 的管理员 user_id 列表 |
-| `rcon_host` | string | `127.0.0.1` | 桥接插件监听地址 |
-| `rcon_port` | int | `25580` | 桥接插件监听端口 |
-| `rcon_password` | string | `""` | 桥接插件 token |
-| `timeout` | float | `5` | 网络超时时间（秒） |
-| `max_output` | int | `1500` | 聊天回显最大长度 |
-| `max_attempts` | int | `2` | 网络失败最大重试次数 |
-| `default_wait_ms` | int | `300` | 默认日志等待时间（毫秒） |
-| `empty_output_wait_ms` | int | `0` | 保留兼容项，建议为 `0`，避免重复执行 |
-
-### ✅ `admins` 示例
-
-```yaml
-admins:
-  - 111
-  - 222
-  - 333
-```
-
-说明：
-
-- `admins` 支持数字或字符串
-- 最终只要能匹配 `event.get_sender_id()` 的值即可
-
----
-
-## 🧩 Minecraft 服务端要求
-
-### 必须安装桥接插件
-
-本插件依赖 Minecraft 服务端安装 **AstrBotRconBridge**。
-
-请先在 Minecraft 服务端安装并配置桥接插件，再配置 AstrBot 侧连接信息。
-
-### 桥接插件示例配置
+将 AstrBotRconBridge 的插件 JAR 放入 Minecraft 服务端的 `plugins` 目录，启动一次生成配置，然后修改 `plugins/AstrBotRconBridge/config.yml`。下面列出需要关注的部分，其余配置保留生成的值：
 
 ```yaml
 bridge:
   host: 127.0.0.1
   port: 25580
-  token: "change_me"
+  token: "replace-with-your-own-token"
   read-timeout-ms: 15000
 
 log-capture:
   enabled: true
-  default-wait-ms: 300
+  default-wait-ms: 1000
   max-wait-ms: 15000
   max-lines: 80
-  only-when-empty: false
-  include-console-executor-line: false
-  regex-filter: ""
-  url-first: true
   file-path: "logs/latest.log"
-  level-mode: "INFO_ONLY"
-  related-only: false
-  include-url-lines: true
-  extra-keywords:
-    - "luckperms"
-    - "lp"
-    - "editor"
-    - "uuid"
-    - "invalid format"
-
-security:
-  enable-ip-whitelist: false
-  whitelist:
-    - "127.0.0.1"
-    - "::1"
-
-messages:
-  auth-failed: "AUTH_FAILED"
-  forbidden-ip: "FORBIDDEN_IP"
-  bad-request: "BAD_REQUEST"
-  internal-error: "INTERNAL_ERROR"
 ```
 
----
+将 `token` 换成自己的令牌，保存配置后重启 Minecraft 服务端。`file-path` 的相对路径以**服务端进程的工作目录**为基准；需要时可以填写绝对路径。
 
-## 🌐 网络说明
+### 2. 安装 AstrBot 插件
 
-若 AstrBot 和 Minecraft 服务端不在同一台机器，请注意：
+在 AstrBot 管理面板的「插件」页面选择「安装插件」，通过 URL 安装 [本仓库](https://github.com/H-aaaa/astrbot_plugin_minecraftconsole)。面板操作可参考 [AstrBot 官方说明](https://docs.astrbot.app/use/webui.html#插件)。
 
-- 放行桥接插件监听端口
-- 配置正确的 `bridge.host`
-- 云服务器需放行安全组端口
-- Docker / 面板服需确认端口映射正常
+手动安装时，将整个仓库放入 AstrBot 工作目录下的 `data/plugins/astrbot_plugin_minecraftconsole/`，确保 `main.py` 和 `metadata.yaml` 位于该目录第一层，然后在面板重载插件或重启 AstrBot。无需额外安装第三方 RCON 库。
 
-如果只在本机使用，建议：
+### 3. 填写 AstrBot 插件配置
 
-```yaml
-bridge:
-  host: 127.0.0.1
+在插件配置页面填写管理员和连接信息。以下示例假设 AstrBot 与 Minecraft 运行在同一台机器、同一个网络环境中：
+
+```json
+{
+  "enabled": true,
+  "admins": ["123456789"],
+  "rcon_host": "127.0.0.1",
+  "rcon_port": 25580,
+  "rcon_password": "replace-with-your-own-token",
+  "timeout": 5,
+  "max_attempts": 2,
+  "test_on_first_use": true,
+  "default_wait_ms": 1000,
+  "max_output": 1500
+}
 ```
 
-这样更安全。
+把 `admins` 替换成实际聊天账号 ID，把 `rcon_password` 填成与桥接端 `bridge.token` 完全相同的值。保存后重载插件，使配置生效。
 
----
+| AstrBot 配置 | 应填写的内容 |
+| --- | --- |
+| `rcon_host` | AstrBot 能访问到的 Minecraft 桥接服务地址 |
+| `rcon_port` | 桥接端 `bridge.port`，默认 `25580` |
+| `rcon_password` | 桥接端 `bridge.token` |
 
-## 🚫 命令使用注意事项
+`bridge.host` 是服务端的**监听地址**。如果将它设为 `0.0.0.0`，AstrBot 的 `rcon_host` 应填写服务器实际 IP 或域名。
 
-### 1. 不要带斜杠
-你发送给插件的参数应当是 **控制台命令本体**：
+AstrBot 在 Docker 中运行时，`127.0.0.1` 指向 AstrBot 容器自身。跨容器或跨机器部署时，需要使用可达的地址，并配置相应的监听地址、端口映射和防火墙。桥接使用明文 TCP，适合通过本机、可信内网或加密隧道连接。
 
-- ✅ 正确：`/mc-command say hello`
-- ❌ 错误：`/mc-command /say hello`
+## 配置项
 
-### 2. 某些命令需要等待日志
-例如：
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 是否启用聊天命令 |
+| `admins` | `[111, 222, 333]` | 面板中的示例管理员 ID，使用前替换为实际账号；支持数字或字符串 |
+| `rcon_host` | `127.0.0.1` | 桥接服务地址 |
+| `rcon_port` | `25580` | 桥接服务端口 |
+| `rcon_password` | 空字符串 | 桥接 token，必填 |
+| `timeout` | `5` | 连接、发送和网络等待余量，单位秒；命令回复会额外包含日志采集及服务端排队、调度时间 |
+| `max_attempts` | `2` | 连接建立失败时的最大尝试次数，**包含首次**；设为 `1` 表示不重试 |
+| `test_on_first_use` | `true` | 首次执行前发送 `PING` 检查桥接连接，不执行 Minecraft 命令；客户端重建后会重新检查 |
+| `default_wait_ms` | `1000` | 未指定 `--t` 时请求的日志采集时间，单位毫秒 |
+| `max_output` | `1500` | 聊天中保留的输出正文字符数，超出后追加截断提示；成功和失败正文都受此限制 |
+
+管理员通过桥接端执行的是控制台命令，拥有相应的控制台权限。请使用自己的 token，并只在 `admins` 中填写需要此权限的账号。
+
+## 执行命令与等待日志
 
 ```text
-/mc-command lp editor --t=5s
+/mc-command <控制台命令> [--t=等待时间]
 ```
 
-如果不加等待窗口，可能会拿不到异步输出。
-
-### 3. 某些错误信息来自日志
-有些命令不会同步返回失败，而是把错误打印到控制台日志中。桥接插件会尝试把这些错误回显给 AstrBot。
-
----
-
-## 🛠️ 常见问题（FAQ）
-
-### 1）提示“你没有权限使用该指令”
-检查 AstrBot 面板配置里的 `admins` 是否包含你的 `user_id`。
-
-### 2）提示“桥接未配置”或认证失败
-检查：
-
-- `rcon_host` 是否正确
-- `rcon_port` 是否正确
-- `rcon_password` 是否与桥接插件 `bridge.token` 一致
-- Minecraft 服务端桥接插件是否已启动
-
-### 3）执行命令后显示“无输出”
-可能原因：
-
-- 该命令本身没有同步返回
-- 命令结果通过日志异步输出
-- 等待窗口不足
-- 桥接插件日志过滤未命中
-
-建议：
-
-- 给命令加 `--t=...`
-- 检查桥接插件 `log-capture` 配置
-- 检查 `file-path` 是否正确指向 `logs/latest.log`
-
-例如：
+Minecraft 命令本体不带 `/`。例如发送 `/mc-command say hello`，桥接端实际执行 `say hello`。
 
 ```text
+/mc-command list
+/mc-command time set day
+/mc-command weather clear
 /mc-command lp editor --t=5s
+/mc-command say hello --t=500ms
 ```
 
-### 4）执行成功，但错误信息没回显
-可能是桥接插件开启了过严的日志过滤，例如：
+`--t` 是 AstrBot 插件的选项，会在转发前移除。建议放在命令末尾；支持以下整数格式：
 
-```yaml
-related-only: true
-```
+| 写法 | 请求的采集时间 |
+| --- | --- |
+| `--t=5s` | 5 秒 |
+| `--t=500ms` | 500 毫秒 |
+| `--t=5` | 5 秒，省略单位时按秒处理 |
+| `--t=0ms` | 不额外等待，可能错过尚未写入文件的日志 |
+| 不写 `--t` | 使用 AstrBot 的 `default_wait_ms` |
 
-某些错误日志中不包含原命令关键词，会被过滤掉。  
-建议先改为：
+额外等待时间从命令派发返回后计算，用于等待异步日志写入，**不会让命令再次执行**。桥接端会用 `log-capture.max-wait-ms` 限制实际等待时间，默认上限为 15 秒。
 
-```yaml
-related-only: false
-```
+AstrBot 每次都会发送明确的等待值。因此，仅修改桥接端的 `log-capture.default-wait-ms`，不会覆盖 AstrBot 的 `default_wait_ms`。需要改变聊天命令的默认等待时间时，修改 AstrBot 侧配置。
 
-### 5）执行命令卡住/超时
-可能原因：
+## 回传结果与重试规则
 
-- `rcon_host` / `rcon_port` 配置错误
-- 端口未放行
-- `timeout` 太小
-- 桥接插件未正常启动
-- 桥接插件等待日志时间过长
+桥接端在执行前记录日志位置，再返回采集窗口内新增的日志。输出保持日志顺序，不再依赖命令关键词过滤，也不再把 URL 提到前面。
 
-### 6）为什么 `lp editor` 这类命令需要 `--t=...`
-因为这类命令通常不是立刻把结果同步返回，而是稍后输出一条日志或链接。  
-所以需要通过等待窗口把异步日志一并捕获回来。
+- **正常回复**：显示执行的命令与输出正文。返回空字符串时显示 `(无输出)`。
+- **服务端返回失败**：显示错误码和服务端返回的正文，便于查看命令报错、拒绝原因或超时信息。
+- **尚未建立连接**：按 `max_attempts` 重试，此时命令还没有发送。
+- **请求发送后超时、断连或响应异常**：不自动重发，提示先确认服务端执行状态。命令可能已执行，只是结果未完整送达。
+- **认证失败、服务端明确返回失败、空输出**：均不会触发自动重发。
 
-### 7）为什么不是原生 RCON
-因为原生 RCON 在很多命令场景下无法稳定拿到完整输出，尤其是：
+桥接端会串行处理请求及其采集窗口，但日志文件还可能包含玩家聊天、其他插件和异步任务的输出，因此返回内容不保证只属于当前命令。`✅ 已执行` 表示桥接端接受了命令，具体业务结果仍以返回内容和服务端状态为准。
 
-- 插件命令
-- 异步命令
-- 仅写入日志的命令
-- 某些报错信息
+桥接端默认最多返回 80 行，并限制日志读取量及正文长度；AstrBot 还会按 `max_output` 截断聊天输出。如果结果被截断，需要同时检查两端的限制。仅增大 `max_output` 无法恢复已经被桥接端截掉的部分。
 
-桥接插件可以更灵活地收集：
+## 常见问题
 
-- 同步命令返回
-- 服务端日志
-- 错误信息
+| 现象 | 排查方向 |
+| --- | --- |
+| 提示没有权限 | 确认 `admins` 包含当前聊天账号的 ID；不是群号或 Minecraft 玩家名 |
+| 提示桥接未配置或认证失败 | 检查 `rcon_host`、`rcon_port`，并确认 `rcon_password` 与 `bridge.token` 一致 |
+| 无法连接桥接服务 | 确认桥接插件已加载，端口是桥接端口，监听地址、容器网络和防火墙允许连接 |
+| `FORBIDDEN_IP` | 检查桥接端 IP 白名单是否允许 AstrBot 的实际来源地址 |
+| `(无输出)` | 确认桥接端 `log-capture.enabled: true`、日志路径正确；异步命令可适当增加 `--t`，并检查是否碰到服务端等待上限 |
+| `Log read failed` | 检查桥接端日志文件路径和读取权限；这表示日志读取失败，命令可能已经执行 |
+| `EXEC_REJECTED` | 查看返回正文，确认命令名称、参数及提供该命令的插件是否正确 |
+| `EXEC_TIMEOUT` | 桥接端等待其他命令或服务端调度超时，先确认服务器状态及命令是否已执行 |
+| 未能获取完整结果 | 检查 AstrBot 与 Minecraft 日志；请求发送后插件不会自动重发 |
+| Folia 上某个插件命令报错 | 确认该插件和命令自身支持 Folia；桥接端的调度适配不能代替第三方插件的区域线程适配 |
 
-因此整体表现比原生 RCON 更稳定。
+## 升级到 1.3.1
 
----
+- 修正日志等待时间与网络超时冲突的问题；例如 `--t=5s` 不会再直接撞上默认 5 秒网络超时。
+- 限制自动重试为连接建立失败，避免命令已经执行后因丢失回复再次发送。
+- 保留服务端失败回复中的错误码与正文，并提高单行响应读取上限以接收较长的 Base64 日志。
+- 新配置的默认日志等待时间改为 `1000ms`。已有配置中的 `300ms` 等自定义值继续生效，需要时在面板手动调整。
+- 将插件元数据与注册信息中的版本号统一为 `1.3.1`，配置字段名继续兼容原有桥接配置。
 
-## 🔒 安全建议
+从早期原生 RCON 版本升级时，需要先安装桥接插件，再将旧的原生 RCON 端口和密码改成桥接端口与 token。新版桥接端只保留采集开关、等待时间、最大行数和文件路径；旧版关键词过滤、URL 排序等采集配置已不再使用。
 
-- 强烈建议不要在公开群聊中暴露此功能
-- 将 `admins` 设置为最小范围
-- 为桥接插件设置强随机 `token`
-- 如有需要，在桥接插件侧开启 IP 白名单
-- 如担心误操作，可自行加入命令黑名单 / 白名单（如禁止 `stop`、`op` 等）
+## 问题反馈
 
----
-
-## 📣 说明
-
-本插件仍在持续调整中，不同 Minecraft 版本、核心和插件组合下，输出表现可能略有差异。  
-如遇问题，请结合控制台日志、桥接插件配置与 AstrBot 配置一并排查。
+请在 [Issues](https://github.com/H-aaaa/astrbot_plugin_minecraftconsole/issues) 中提供 AstrBot 版本、Minecraft 核心及版本、桥接版本、复现命令和相关错误日志。提交前删除 token、密码等敏感内容。

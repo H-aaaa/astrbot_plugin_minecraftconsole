@@ -23,7 +23,7 @@ from .rcon_client import (
 from .utils import parse_command_args, parse_exec_options, truncate_text
 
 
-@register("minecraftconsole", "MineCraft控制台", "使用桥接服务发送命令至MC", "1.3.0")
+@register("minecraftconsole", "MineCraft控制台", "使用桥接服务发送命令至MC", "1.3.1")
 class MinecraftConsole(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
