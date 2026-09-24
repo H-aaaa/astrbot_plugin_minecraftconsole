@@ -12,11 +12,18 @@ from astrbot.api.star import Context, Star, register
 
 from .config import MinecraftConsoleConfig
 from .message_formatter import MessageFormatter
-from .rcon_client import AsyncRconClient, RconAuthError, RconConfig, RconError
+from .rcon_client import (
+    AsyncRconClient,
+    RconAuthError,
+    RconConfig,
+    RconConnectionError,
+    RconError,
+    RconResponseError,
+)
 from .utils import parse_command_args, parse_exec_options, truncate_text
 
 
-@register("minecraftconsole", "MineCraft控制台", "使用桥接服务发送命令至MC", "1.3.0")
+@register("minecraftconsole", "MineCraft控制台", "使用桥接服务发送命令至MC", "1.3.1")
 class MinecraftConsole(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
@@ -64,22 +71,21 @@ class MinecraftConsole(Star):
         if self._client is None or self._client_cfg is None:
             raise RconError("client not ready")
 
-        last_error: Exception | None = None
         for attempt in range(1, int(self.config.max_attempts) + 1):
             try:
                 return await self._client.exec(command, wait_ms)
-            except RconAuthError:
-                await self._client.close()
-                self._client = AsyncRconClient(self._client_cfg)
-                raise
-            except Exception as e:
-                last_error = e
-                logger.warning("[MC-BRIDGE] 第 %s/%s 次执行失败: %s", attempt, self.config.max_attempts, e)
+            except RconConnectionError as e:
+                logger.warning("[MC-BRIDGE] 第 %s/%s 次连接失败: %s", attempt, self.config.max_attempts, e)
                 await self._client.close()
                 self._client = AsyncRconClient(self._client_cfg)
                 if attempt >= int(self.config.max_attempts):
-                    break
-        raise RconError(str(last_error) if last_error else "unknown error")
+                    raise
+            except Exception:
+                # 命令可能已经执行；超时、断连、协议错误和服务端错误均不重发。
+                await self._client.close()
+                self._client = AsyncRconClient(self._client_cfg)
+                raise
+        raise RconError("No connection attempts configured")
 
     @filter.command("mc-command")
     async def mc_command(self, event: AstrMessageEvent):
@@ -118,9 +124,16 @@ class MinecraftConsole(Star):
                 yield event.plain_result(self.formatter.format_exec_result(options.command, output))
             except RconAuthError:
                 yield event.plain_result(self.formatter.format_auth_failed())
+            except RconResponseError as e:
+                output = truncate_text(e.output or "(无输出)", int(self.config.max_output))
+                yield event.plain_result(
+                    self.formatter.format_command_failed(options.command, e.code, output)
+                )
+            except RconConnectionError:
+                yield event.plain_result(self.formatter.format_exec_failed())
             except Exception as e:
                 logger.error("[MC-BRIDGE] 执行失败: %s", e, exc_info=True)
-                yield event.plain_result(self.formatter.format_exec_failed())
+                yield event.plain_result(self.formatter.format_result_unavailable())
 
     async def terminate(self):
         logger.info("[MC-BRIDGE] 正在停止插件...")

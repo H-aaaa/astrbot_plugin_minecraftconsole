@@ -28,22 +28,24 @@
   "timeout": {
     "type": "float",
     "description": "网络超时时间(秒)",
+    "hint": "命令响应会额外包含日志等待和服务端排队时间；网络较慢时可适当增大此项",
     "default": 5
   },
   "max_attempts": {
     "type": "int",
-    "description": "网络层最多尝试次数（不会因为空输出重复执行命令）",
+    "description": "连接建立失败时的最大尝试次数（含首次）",
+    "hint": "命令发送后不自动重试；超时、断连、认证失败、服务端错误和空输出都不会触发重发",
     "default": 2
   },
   "test_on_first_use": {
     "type": "bool",
-    "description": "首次使用前是否先做一次 ping 测试",
+    "description": "首次使用前是否先发送 PING 检查连接",
     "default": true
   },
   "default_wait_ms": {
     "type": "int",
     "description": "未显式传 --t 时，默认等待日志的毫秒数",
-    "default": 300
+    "default": 1000
   },
   "max_output": {
     "type": "int",

@@ -16,12 +16,12 @@ class MinecraftConsoleConfig:
     rcon_password: str = ""
     timeout: float = 5.0
 
-    # 网络重试，仅针对网络/鉴权/协议错误，不会因为空输出重复执行命令
+    # 仅在连接建立失败、命令尚未发送时重试；包含首次尝试
     max_attempts: int = 2
     test_on_first_use: bool = True
 
     # 默认日志等待时间；若用户显式带 --t，则以用户值为准
-    default_wait_ms: int = 300
+    default_wait_ms: int = 1000
 
     # 输出控制
     max_output: int = 1500
@@ -29,7 +29,7 @@ class MinecraftConsoleConfig:
     def __post_init__(self):
         self.admins = self._parse_list(self.admins)
         self.max_attempts = self._to_int(self.max_attempts, 2, minimum=1)
-        self.default_wait_ms = self._to_int(self.default_wait_ms, 300, minimum=0)
+        self.default_wait_ms = self._to_int(self.default_wait_ms, 1000, minimum=0)
         self.max_output = self._to_int(self.max_output, 1500, minimum=1)
         try:
             self.timeout = max(1.0, float(self.timeout))

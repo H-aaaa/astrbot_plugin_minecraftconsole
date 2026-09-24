@@ -30,4 +30,15 @@ class MessageFormatter:
 
     @staticmethod
     def format_exec_failed() -> str:
-        return "❌ 指令执行失败：请检查桥接插件是否启动、host/port/token 是否正确"
+        return "❌ 无法连接桥接服务，命令未发送：请检查桥接插件是否启动、host/port 是否正确"
+
+    @staticmethod
+    def format_command_failed(command: str, code: str, output: str) -> str:
+        return f"❌ 桥接返回失败：{command}\n状态：{code}\n📤 返回：{output}"
+
+    @staticmethod
+    def format_result_unavailable() -> str:
+        return (
+            "❌ 未能获取完整结果，请检查 AstrBot 与服务端日志。"
+            "命令可能已经执行，插件没有自动重发，请先确认服务端状态。"
+        )
